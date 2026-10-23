@@ -1,0 +1,22 @@
+{
+	"info": {
+		"id": "en.comichubfree",
+		"name": "ComicHubFree",
+		"version": 1,
+		"url": "https://comichubfree.com",
+		"contentRating": 0,
+		"languages": ["en"],
+		"minAppVersion": "0.8.4"
+	},
+	"listings": [
+		{
+			"id": "Popular"
+		},
+		{
+			"id": "Latest"
+		}
+	],
+	"config": {
+		"hidesFiltersWhileSearching": true
+	}
+}

@@ -1,0 +1,216 @@
+#![no_std]
+use aidoku::{
+	Chapter, DeepLinkHandler, DeepLinkResult, FilterValue, Listing, ListingProvider, Manga,
+	MangaPageResult, MangaStatus, Page, PageContent, Result, Source, Viewer,
+	alloc::{String, Vec},
+	helpers::uri::encode_uri_component,
+	imports::{
+		html::{Document, Element},
+		net::Request,
+		std::parse_date,
+	},
+	prelude::*,
+};
+
+const BASE_URL: &str = "https://comichubfree.com";
+const NEXT_PAGE: &str = "ul.pagination a[rel=next]";
+
+struct ComicHubFree;
+
+fn html(url: &str) -> Result<Document> {
+	Ok(Request::get(url)?
+		.header("Referer", &format!("{BASE_URL}/"))
+		.html()?)
+}
+
+/// The image of a card or cover: lazy-loaded ones keep it in `data-src`.
+fn image(element: &Element) -> Option<String> {
+	element
+		.attr("abs:data-src")
+		.or_else(|| element.attr("abs:src"))
+}
+
+fn manga_list(url: &str) -> Result<MangaPageResult> {
+	let html = html(url)?;
+	let entries = html
+		.select(".movie-list-index > .cartoon-box:has(.detail)")
+		.map(|elements| {
+			elements
+				.filter_map(|element| {
+					let link = element.select_first("a")?.attr("abs:href")?;
+					Some(Manga {
+						key: link.strip_prefix(BASE_URL)?.into(),
+						title: element.select_first("h3")?.text()?,
+						cover: element.select_first("img").and_then(|img| image(&img)),
+						url: Some(link),
+						viewer: Viewer::LeftToRight,
+						..Default::default()
+					})
+				})
+				.collect::<Vec<Manga>>()
+		})
+		.unwrap_or_default();
+	let has_next_page = html.select_first(NEXT_PAGE).is_some();
+	Ok(MangaPageResult {
+		entries,
+		has_next_page,
+	})
+}
+
+fn chapters(mut html: Document) -> Result<Vec<Chapter>> {
+	let mut chapters = Vec::new();
+	loop {
+		if let Some(rows) = html.select("div.episode-list > div > table > tbody > tr") {
+			for row in rows {
+				let Some(link) = row.select_first("a") else {
+					continue;
+				};
+				let Some(url) = link.attr("abs:href") else {
+					continue;
+				};
+				let title = link.text().unwrap_or_default();
+				chapters.push(Chapter {
+					key: url.strip_prefix(BASE_URL).unwrap_or(&url).into(),
+					chapter_number: chapter_number(&title),
+					date_uploaded: row
+						.select("td:last-of-type")
+						.and_then(|cells| cells.text())
+						.and_then(|date| parse_date(date.trim(), "d-MMM-yyyy")),
+					title: Some(title),
+					url: Some(url),
+					..Default::default()
+				});
+			}
+		}
+		let Some(next) = html
+			.select_first(NEXT_PAGE)
+			.and_then(|a| a.attr("abs:href"))
+		else {
+			break;
+		};
+		html = self::html(&next)?;
+	}
+	Ok(chapters)
+}
+
+/// The number after the last "#" (the site names chapters "Title #12").
+fn chapter_number(title: &str) -> Option<f32> {
+	let rest = title.rsplit_once('#')?.1;
+	let number: String = rest
+		.chars()
+		.take_while(|c| c.is_ascii_digit() || *c == '.')
+		.collect();
+	number.parse().ok()
+}
+
+impl Source for ComicHubFree {
+	fn new() -> Self {
+		Self
+	}
+
+	fn get_search_manga_list(
+		&self,
+		query: Option<String>,
+		page: i32,
+		_filters: Vec<FilterValue>,
+	) -> Result<MangaPageResult> {
+		let key = query.map(encode_uri_component).unwrap_or_default();
+		manga_list(&format!("{BASE_URL}/search-comic?key={key}&page={page}"))
+	}
+
+	fn get_manga_update(
+		&self,
+		mut manga: Manga,
+		needs_details: bool,
+		needs_chapters: bool,
+	) -> Result<Manga> {
+		let html = html(&format!("{BASE_URL}{}", manga.key))?;
+
+		if needs_details && let Some(info) = html.select_first("div.movie-info") {
+			let series = info.select_first("div.series-info");
+			manga.description = info.select_first("div#film-content").and_then(|e| e.text());
+			if let Some(series) = series {
+				if let Some(cover) = series.select_first("img").and_then(|img| image(&img)) {
+					manga.cover = Some(cover);
+				}
+				manga.authors = series
+					.select("dt:contains(Authors:) + dd")
+					.and_then(|e| e.text())
+					.map(|a| aidoku::alloc::vec![a]);
+				manga.status = match series
+					.select("dt:contains(Status:) + dd")
+					.and_then(|e| e.text())
+					.as_deref()
+				{
+					Some("Ongoing") => MangaStatus::Ongoing,
+					Some("Completed") => MangaStatus::Completed,
+					_ => MangaStatus::Unknown,
+				};
+			}
+			manga.url = Some(format!("{BASE_URL}{}", manga.key));
+			manga.viewer = Viewer::LeftToRight;
+		}
+
+		if needs_chapters {
+			manga.chapters = Some(chapters(html)?);
+		}
+
+		Ok(manga)
+	}
+
+	fn get_page_list(&self, _manga: Manga, chapter: Chapter) -> Result<Vec<Page>> {
+		let html = html(&format!("{BASE_URL}{}/all", chapter.key))?;
+		let mut seen = Vec::<String>::new();
+		for img in html.select("img.chapter_img").into_iter().flatten() {
+			if let Some(url) = image(&img)
+				&& !seen.contains(&url)
+			{
+				seen.push(url);
+			}
+		}
+		Ok(seen
+			.into_iter()
+			.map(|url| Page {
+				content: PageContent::url(url),
+				..Default::default()
+			})
+			.collect())
+	}
+}
+
+impl ListingProvider for ComicHubFree {
+	fn get_manga_list(&self, listing: Listing, page: i32) -> Result<MangaPageResult> {
+		let path = match listing.id.as_str() {
+			"Latest" => "new-comic",
+			_ => "popular-comic",
+		};
+		manga_list(&format!("{BASE_URL}/{path}?page={page}"))
+	}
+}
+
+impl DeepLinkHandler for ComicHubFree {
+	fn handle_deep_link(&self, url: String) -> Result<Option<DeepLinkResult>> {
+		let Some(path) = url
+			.strip_prefix(BASE_URL)
+			.filter(|p| p.starts_with("/comic/"))
+		else {
+			return Ok(None);
+		};
+		let path = path
+			.split(['?', '#'])
+			.next()
+			.unwrap_or_default()
+			.trim_end_matches('/');
+		// /comic/<slug> is a title, /comic/<slug>/<chapter> a chapter
+		Ok(Some(match path.matches('/').count() {
+			2 => DeepLinkResult::Manga { key: path.into() },
+			3.. => DeepLinkResult::Chapter {
+				manga_key: path.rsplit_once('/').map(|(m, _)| m).unwrap_or(path).into(),
+				key: path.into(),
+			},
+			_ => return Ok(None),
+		}))
+	}
+}
+
+register_source!(ComicHubFree, ListingProvider, DeepLinkHandler);
