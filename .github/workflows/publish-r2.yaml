@@ -19,24 +19,30 @@ permissions:
 
 env:
   LIST_NAME: Kiri Sources
-  AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-  AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-  AWS_DEFAULT_REGION: auto
-  R2_BUCKET: ${{ secrets.R2_BUCKET }}
-  R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
-  RELEASE_BASE_URL: ${{ secrets.RELEASE_BASE_URL }}
 
+# Separate jobs, so a failed step re-runs on its own ("Re-run failed jobs") with the earlier results kept as artifacts:
+# settings -> build -> list -> publish -> verify
 jobs:
-  publish:
+  settings:
     runs-on: ubuntu-latest
     steps:
       - name: Check the R2 settings
+        env:
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          RELEASE_BASE_URL: ${{ secrets.RELEASE_BASE_URL }}
         run: |
           set -euo pipefail
-          for name in AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY R2_BUCKET R2_ENDPOINT RELEASE_BASE_URL; do
+          for name in R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY R2_BUCKET R2_ENDPOINT RELEASE_BASE_URL; do
             [[ -n "${!name}" ]] || { echo "::error::$name is not set (secrets R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET, R2_ENDPOINT and RELEASE_BASE_URL)"; exit 1; }
           done
 
+  # The slow part: every source compiled to a package
+  build:
+    runs-on: ubuntu-latest
+    steps:
       - uses: actions/checkout@v6
 
       - uses: dtolnay/rust-toolchain@stable
@@ -72,11 +78,63 @@ jobs:
             echo "::endgroup::"
           done
 
+      - uses: actions/upload-artifact@v4
+        with:
+          name: packages
+          path: sources/*/package.aix
+          retention-days: 7
+          if-no-files-found: error
+
+  # The list itself: quick, needs only the packages
+  list:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.99.0"
+
+      - uses: ./.github/actions/install-aidoku-cli
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: packages
+          path: sources
+
       - name: Build source list
         run: aidoku build sources/*/package.aix --name "$LIST_NAME"
 
-      # The bucket also holds the app's releases (updates/, <channel>/): only the list's own paths are written, nothing is deleted
-      # outside sources/ and icons/, and never with a sync at the bucket root.
+      # only what goes into the bucket: no front page
+      - uses: actions/upload-artifact@v4
+        with:
+          name: list
+          path: |
+            public/sources
+            public/icons
+            public/index.min.json
+            public/index.json
+          retention-days: 7
+          if-no-files-found: error
+
+  # The bucket also holds the app's releases (updates/, <channel>/): only the list's own paths are written, nothing is deleted
+  # outside sources/ and icons/, and never with a sync at the bucket root.
+  publish:
+    needs: [settings, list]
+    runs-on: ubuntu-latest
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: auto
+      R2_BUCKET: ${{ secrets.R2_BUCKET }}
+      R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: list
+          path: public
+
       - name: Publish to the root of the bucket
         run: |
           set -euo pipefail
@@ -92,7 +150,13 @@ jobs:
             s3 cp "public/$index" "s3://${R2_BUCKET}/$index" --content-type application/json --cache-control "no-cache"
           done
 
-      # The base URL is a secret, so it is masked in the log: the check below only says whether the published list answers.
+  # The base URL is a secret, so it is masked in the log: the check only says whether the published list answers.
+  verify:
+    needs: publish
+    runs-on: ubuntu-latest
+    env:
+      RELEASE_BASE_URL: ${{ secrets.RELEASE_BASE_URL }}
+    steps:
       - name: Check the published list
         run: |
           set -euo pipefail
