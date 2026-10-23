@@ -1,0 +1,92 @@
+name: Publish source list to R2
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "sources/**"
+      - "templates/**"
+      - ".github/actions/install-aidoku-cli/**"
+      - ".github/workflows/publish-r2.yaml"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  LIST_NAME: Kiri Sources
+  AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+  AWS_DEFAULT_REGION: auto
+  R2_BUCKET: ${{ vars.R2_BUCKET }}
+  R2_ENDPOINT: ${{ vars.R2_ENDPOINT }}
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check the R2 settings
+        run: |
+          set -euo pipefail
+          for name in AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY R2_BUCKET R2_ENDPOINT; do
+            [[ -n "${!name}" ]] || { echo "::error::$name is not set (secrets R2_ACCESS_KEY_ID and R2_SECRET_ACCESS_KEY, variables R2_BUCKET and R2_ENDPOINT)"; exit 1; }
+          done
+
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.99.0"
+          targets: wasm32-unknown-unknown
+
+      - name: Cache rust stuff
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            sources/**/target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - uses: ./.github/actions/install-aidoku-cli
+
+      - name: Build sources
+        run: |
+          set -euo pipefail
+
+          for source in sources/*; do
+            [[ -f "$source/Cargo.toml" ]] || continue
+
+            echo "::group::Packaging $source"
+            (
+              cd "$source"
+              aidoku package
+            )
+            echo "::endgroup::"
+          done
+
+      - name: Build source list
+        run: aidoku build sources/*/package.aix --name "$LIST_NAME"
+
+      # The bucket also holds the app's releases (updates/, <channel>/): only the list's own paths are written, nothing is deleted
+      # outside sources/ and icons/, and never with a sync at the bucket root.
+      - name: Publish to the root of the bucket
+        run: |
+          set -euo pipefail
+          s3() { aws s3 "$@" --endpoint-url "$R2_ENDPOINT" --only-show-errors; }
+
+          # packages and icons first (their file names carry the version, so they never change once published)
+          s3 sync public/sources "s3://${R2_BUCKET}/sources" --delete --content-type application/octet-stream --cache-control "public, max-age=31536000, immutable"
+          s3 sync public/icons "s3://${R2_BUCKET}/icons" --delete --content-type image/png --cache-control "public, max-age=31536000, immutable"
+
+          # the list last, so it never names a package that is not there yet
+          for index in index.min.json index.json; do
+            [[ -f "public/$index" ]] || continue
+            s3 cp "public/$index" "s3://${R2_BUCKET}/$index" --content-type application/json --cache-control "no-cache"
+          done
