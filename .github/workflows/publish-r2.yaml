@@ -22,8 +22,8 @@ env:
   AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
   AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
   AWS_DEFAULT_REGION: auto
-  R2_BUCKET: ${{ vars.R2_BUCKET }}
-  R2_ENDPOINT: ${{ vars.R2_ENDPOINT }}
+  R2_BUCKET: ${{ secrets.R2_BUCKET }}
+  R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
   RELEASE_BASE_URL: ${{ secrets.RELEASE_BASE_URL }}
 
 jobs:
@@ -34,7 +34,7 @@ jobs:
         run: |
           set -euo pipefail
           for name in AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY R2_BUCKET R2_ENDPOINT RELEASE_BASE_URL; do
-            [[ -n "${!name}" ]] || { echo "::error::$name is not set (secrets R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY and RELEASE_BASE_URL, variables R2_BUCKET and R2_ENDPOINT)"; exit 1; }
+            [[ -n "${!name}" ]] || { echo "::error::$name is not set (secrets R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET, R2_ENDPOINT and RELEASE_BASE_URL)"; exit 1; }
           done
 
       - uses: actions/checkout@v6
