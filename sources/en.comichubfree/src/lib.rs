@@ -143,12 +143,13 @@ impl Source for ComicHubFree {
 		if needs_details && let Some(info) = html.select_first("div.movie-info") {
 			let series = info.select_first("div.series-info");
 			manga.description = info.select_first("div#film-content").and_then(|e| e.text());
-			if let Some(series) = series {
+			if let Some(series) = &series {
 				if let Some(cover) = series.select_first("img").and_then(|img| image(&img)) {
 					manga.cover = Some(cover);
 				}
+				// the label reads "Author:" (the Mihon extension still looks for "Authors:")
 				manga.authors = series
-					.select("dt:contains(Authors:) + dd")
+					.select("dt:contains(Author) + dd")
 					.and_then(|e| e.text())
 					.map(|a| aidoku::alloc::vec![a]);
 				manga.status = match series
@@ -161,6 +162,13 @@ impl Source for ComicHubFree {
 					_ => MangaStatus::Unknown,
 				};
 			}
+			manga.tags = series.as_ref().and_then(|series| {
+				series.select("dt:contains(Genres:) + dd a").map(|links| {
+					links
+						.filter_map(|link| link.text())
+						.collect::<Vec<String>>()
+				})
+			});
 			manga.url = Some(format!("{BASE_URL}{}", manga.key));
 			manga.viewer = Viewer::LeftToRight;
 		}

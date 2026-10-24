@@ -2,7 +2,7 @@
 	"info": {
 		"id": "en.comichubfree",
 		"name": "ComicHubFree",
-		"version": 2,
+		"version": 3,
 		"url": "https://comichubfree.com",
 		"contentRating": 0,
 		"languages": ["en"],
