@@ -1,14 +1,14 @@
 #![no_std]
 use aidoku::{
-	Chapter, DeepLinkHandler, DeepLinkResult, FilterValue, HashMap, Listing, ListingProvider,
-	Manga, MangaPageResult, MangaStatus, Page, PageContent, Result, Source, Viewer,
-	WebLoginHandler,
+	Chapter, DeepLinkHandler, DeepLinkResult, FilterValue, HashMap, Home, HomeComponent,
+	HomeComponentValue, HomeLayout, HomePartialResult, Link, Listing, ListingProvider, Manga,
+	MangaPageResult, MangaStatus, Page, PageContent, Result, Source, Viewer, WebLoginHandler,
 	alloc::{String, Vec},
 	helpers::uri::encode_uri_component,
 	imports::{
 		html::{Document, Element},
 		net::Request,
-		std::parse_date,
+		std::{parse_date, send_partial_result},
 	},
 	prelude::*,
 };
@@ -128,7 +128,11 @@ impl Source for ComicHubFree {
 		page: i32,
 		_filters: Vec<FilterValue>,
 	) -> Result<MangaPageResult> {
-		let key = query.map(encode_uri_component).unwrap_or_default();
+		// without a search the site has nothing to show for an empty key: browse the popular titles instead
+		let Some(query) = query.filter(|q| !q.trim().is_empty()) else {
+			return manga_list(&format!("{BASE_URL}/popular-comic?page={page}"));
+		};
+		let key = encode_uri_component(query);
 		manga_list(&format!("{BASE_URL}/search-comic?key={key}&page={page}"))
 	}
 
@@ -210,6 +214,34 @@ impl ListingProvider for ComicHubFree {
 	}
 }
 
+impl Home for ComicHubFree {
+	fn get_home(&self) -> Result<HomeLayout> {
+		for (title, path) in [("Popular", "popular-comic"), ("Latest", "new-comic")] {
+			let entries = manga_list(&format!("{BASE_URL}/{path}?page=1"))?
+				.entries
+				.into_iter()
+				.map(Link::from)
+				.collect::<Vec<Link>>();
+			if entries.is_empty() {
+				continue;
+			}
+			send_partial_result(&HomePartialResult::Component(HomeComponent {
+				title: Some(title.into()),
+				value: HomeComponentValue::Scroller {
+					entries,
+					listing: Some(Listing {
+						id: title.into(),
+						name: title.into(),
+						..Default::default()
+					}),
+				},
+				..Default::default()
+			}));
+		}
+		Ok(HomeLayout::default())
+	}
+}
+
 impl DeepLinkHandler for ComicHubFree {
 	fn handle_deep_link(&self, url: String) -> Result<Option<DeepLinkResult>> {
 		let Some(path) = url
@@ -244,6 +276,7 @@ impl WebLoginHandler for ComicHubFree {
 register_source!(
 	ComicHubFree,
 	ListingProvider,
+	Home,
 	DeepLinkHandler,
 	WebLoginHandler
 );
