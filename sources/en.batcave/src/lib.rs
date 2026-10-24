@@ -173,12 +173,8 @@ impl Source for BatCave {
 				.and_then(|x| x.data())
 				.ok_or(error!("No script data"))?;
 
-			let json_str = script_data
-				.strip_prefix("window.__DATA__ = ")
-				.and_then(|x| x.strip_suffix(";"))
-				.unwrap_or_default();
-
-			let chapter_list = serde_json::from_str::<ChapterList>(json_str)?;
+			let chapter_list = parse_data::<ChapterList>(&script_data)
+				.ok_or(error!("Could not read the chapter list"))?;
 
 			let chapters = chapter_list
 				.chapters
@@ -202,17 +198,10 @@ impl Source for BatCave {
 				elements
 					.filter_map(|element| {
 						let text = element.data()?;
-						if !text.starts_with("window.__DATA__") {
-							return None;
-						}
-
-						let page_json_str =
-							text.strip_prefix("window.__DATA__ = ")?.strip_suffix(";")?;
-
-						let page_list = serde_json::from_str::<PageList>(page_json_str).ok()?;
+						let page_list = parse_data::<PageList>(&text)?;
 
 						let pages = page_list
-							.images
+							.into_images()
 							.into_iter()
 							.map(|page_url| {
 								let url = if page_url.starts_with("/") {
@@ -240,7 +229,9 @@ impl Source for BatCave {
 
 impl WebLoginHandler for BatCave {
 	fn handle_web_login(&self, key: String, cookies: HashMap<String, String>) -> Result<bool> {
-		Ok(key == VERIFY_KEY && cookies.contains_key(TRUST_COOKIE_KEY))
+		// the site used to hand out a guard cookie; it now asks readers to sign in, which sets DLE's user cookie
+		Ok(key == VERIFY_KEY
+			&& (cookies.contains_key(TRUST_COOKIE_KEY) || cookies.contains_key("dle_user_id")))
 	}
 }
 

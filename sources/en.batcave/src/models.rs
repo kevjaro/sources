@@ -48,4 +48,31 @@ impl SingleChapter {
 #[derive(Deserialize)]
 pub struct PageList {
 	pub images: Vec<String>,
+	// the reader's own script cuts the list down to this many (the site sends one image too many)
+	pub pages: Option<usize>,
+}
+
+impl PageList {
+	pub fn into_images(self) -> Vec<String> {
+		let mut images = self.images;
+		if let Some(pages) = self.pages {
+			images.truncate(pages);
+		}
+		images
+	}
+}
+
+/// The value of a `window.__DATA__ = {...};` script. The reader pages carry more statements after the object
+/// (`;if(window.__DATA__.images&&...)...`), so only the first JSON value is read.
+pub fn parse_data<T: serde::de::DeserializeOwned>(script: &str) -> Option<T> {
+	let json = script
+		.trim_start()
+		.strip_prefix("window.__DATA__")?
+		.trim_start()
+		.strip_prefix('=')?
+		.trim_start();
+	serde_json::Deserializer::from_str(json)
+		.into_iter::<T>()
+		.next()?
+		.ok()
 }
