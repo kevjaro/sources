@@ -1,0 +1,19 @@
+[
+	{
+		"type": "group",
+		"title": "Verify Access",
+		"items": [
+			{
+				"type": "login",
+				"method": "web",
+				"url": "https://comichubfree.com/",
+				"key": "verify",
+				"title": "Verify ComicHubFree Access",
+				"logoutTitle": "Re-Verify ComicHubFree Access",
+				"notification": "verify",
+				"refreshes": ["content"]
+			}
+		],
+		"footer": "The site checks that you are a person. Open this and pass the check if ComicHubFree fails to load."
+	}
+]

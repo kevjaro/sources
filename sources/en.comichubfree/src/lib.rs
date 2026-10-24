@@ -1,7 +1,8 @@
 #![no_std]
 use aidoku::{
-	Chapter, DeepLinkHandler, DeepLinkResult, FilterValue, Listing, ListingProvider, Manga,
-	MangaPageResult, MangaStatus, Page, PageContent, Result, Source, Viewer,
+	Chapter, DeepLinkHandler, DeepLinkResult, FilterValue, HashMap, Listing, ListingProvider,
+	Manga, MangaPageResult, MangaStatus, Page, PageContent, Result, Source, Viewer,
+	WebLoginHandler,
 	alloc::{String, Vec},
 	helpers::uri::encode_uri_component,
 	imports::{
@@ -17,10 +18,23 @@ const NEXT_PAGE: &str = "ul.pagination a[rel=next]";
 
 struct ComicHubFree;
 
+/// The cookie the site's browser check hands out once it is passed.
+const CLEARANCE_COOKIE: &str = "cf_clearance";
+const VERIFY_KEY: &str = "verify";
+
 fn html(url: &str) -> Result<Document> {
-	Ok(Request::get(url)?
+	let response = Request::get(url)?
 		.header("Referer", &format!("{BASE_URL}/"))
-		.html()?)
+		.send()?;
+	// the site sits behind a browser check: it has to be passed once, in the source's settings
+	if matches!(response.status_code(), 403 | 503)
+		&& response
+			.get_header("cf-mitigated")
+			.is_some_and(|value| value == "challenge")
+	{
+		bail!("Verification required in settings.");
+	}
+	Ok(response.get_html()?)
 }
 
 /// The image of a card or cover: lazy-loaded ones keep it in `data-src`.
@@ -213,4 +227,15 @@ impl DeepLinkHandler for ComicHubFree {
 	}
 }
 
-register_source!(ComicHubFree, ListingProvider, DeepLinkHandler);
+impl WebLoginHandler for ComicHubFree {
+	fn handle_web_login(&self, key: String, cookies: HashMap<String, String>) -> Result<bool> {
+		Ok(key == VERIFY_KEY && cookies.contains_key(CLEARANCE_COOKIE))
+	}
+}
+
+register_source!(
+	ComicHubFree,
+	ListingProvider,
+	DeepLinkHandler,
+	WebLoginHandler
+);
